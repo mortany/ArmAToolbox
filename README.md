@@ -1,15 +1,6 @@
 # Latest News
 Release 4.0.5 has been updated. If you had trouble installing it, it should work now. Turns out I forgot to add the distribution archive :|
 
-# PayPal
-If you like this project and want to support it, consider a donation
-
-<a href="https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=FYA4ZJ5K5TTBY">
-  <img src="http://i.imgur.com/ZVklR0N.jpg" alt="Donate with PayPal" />
-</a>
-
-Donations are appreciated, but not necessary. 
-
 # ArmAToolbox
 Arma Toolbox for Blender
 This is a collection of Python scripts for the Blender 3D package
