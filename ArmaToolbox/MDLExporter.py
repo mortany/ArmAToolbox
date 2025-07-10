@@ -463,7 +463,7 @@ def get_normals(mesh):
     return normals.keys(), normals_lookup_dict
 
 def export_lod(filePtr, obj, wm, idx, useFixedNormals):
-    # ArmaTools.optimize_export_lod(obj)
+    ArmaTools.optimize_export_lod(obj)
     # Header
     writeSignature(filePtr, 'P3DM')
     writeULong(filePtr, 0x1C)
