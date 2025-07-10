@@ -152,6 +152,12 @@ def OLDwriteNormals(filePtr, mesh, numberOfNormals):
     
     #return v
 
+def WriteNormalsFixed(filePtr, normals):
+    for normal in normals:
+        writeFloat(filePtr, -normal[0])
+        writeFloat(filePtr, -normal[2])
+        writeFloat(filePtr, -normal[1])
+
 # FaceNormals must be inverted (-X, -Y, -Z) for clockwise vertex order (default for DirectX), and not changed for counterclockwise order.
 def writeNormals(filePtr, mesh, numberOfNormals):
     print("faces = ", len(mesh.polygons))
@@ -167,16 +173,48 @@ def writeNormals(filePtr, mesh, numberOfNormals):
             writeFloat(filePtr, -normal[2])
             #print("normal = " , normal)
 
-def writeVertices(filePtr, mesh):
-    for v in mesh.vertices:
+def writeVertices(filePtr, mesh, flag = 0):
+    for v in mesh.verts:
         writeFloat(filePtr, v.co.x)
         writeFloat(filePtr, v.co.z)
         writeFloat(filePtr, v.co.y)
+        writeULong(filePtr, flag)
+
+
+def write_face_pseudo_vertextable(filePtr, loop, uv_layer, normals_lookup_dict):
+    writeULong(filePtr, loop.vert.index)
+    writeULong(filePtr, normals_lookup_dict[loop.index])
+    
+    if not uv_layer:
+        writeFloat(filePtr, 0.0)
+        writeFloat(filePtr, 0.0)
+        return
+
+    writeFloat(filePtr, loop[uv_layer].uv[0])
+    writeFloat(filePtr, 1 - loop[uv_layer].uv[1])
+
+def writeFacesN(filePtr, obj, mesh, bm, normals_lookup_dict):
+    uv_layer = None
+    if len(bm.loops.layers.uv.values()) > 0:
+        uv_layer = bm.loops.layers.uv.values()[0]
+    
+    for face in bm.faces:
+        count_sides = len(face.loops)
+        writeULong(filePtr, count_sides)
+
+        for i in range(count_sides):
+            write_face_pseudo_vertextable(filePtr, face.loops[i], uv_layer, normals_lookup_dict)
+        if count_sides < 4:
+            for n in range(4):
+                writeULong(filePtr, 0)
+        
+        materialName, textureName = getMaterialInfo(face, obj)
         writeULong(filePtr, 0)
+        writeString(filePtr, textureName)
+        writeString(filePtr, materialName)
 
 
-
-def writeFaces(filePtr, obj, mesh):
+def writeFaces(filePtr, obj, mesh, bm):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     bm.faces.ensure_lookup_table()
@@ -341,6 +379,28 @@ def writeNamedSelections(filePtr, obj, mesh):
         writeBytes(filePtr, polyBlob)
     print("named selections: done")
 
+def writeSharpEdgesN(filePtr, bm):
+    writeByte(filePtr, 1)
+    writeString(filePtr, '#SharpEdges#')
+    data_start_pos = filePtr.tell()
+    writeULong(filePtr, 0)
+
+    flat_face_edges = set()
+    
+    for face in bm.faces:
+        if not face.smooth:
+            flat_face_edges.update({edge for edge in face.edges})
+    
+    for edge in bm.edges:
+        if not edge.smooth or edge in flat_face_edges:
+            writeULong(filePtr, edge.verts[0].index)
+            writeULong(filePtr, edge.verts[1].index)
+    
+    data_end_pos = filePtr.tell()
+    filePtr.seek(data_start_pos, 0)
+    writeULong(filePtr, data_end_pos-data_start_pos-4) # fill in length data
+    filePtr.seek(data_end_pos, 0)
+            
 def writeSharpEdges(filePtr, mesh):
     # First, gather the edges of the flat shaded faces.
     edges = [edge for face in mesh.polygons if not face.use_smooth for edge in face.edge_keys]
@@ -461,9 +521,22 @@ def checkMass(obj, lod, mesh):
     for idx in range(0,len(mesh.vertices)):
         vgrp.add([idx],1,'ADD')
 
+def get_normals(mesh):
+    normals = {}
+    normals_lookup_dict = {}
 
-def export_lod(filePtr, obj, wm, idx):
-    ArmaTools.optimize_export_lod(obj)
+    for i, loop in enumerate(mesh.loops):
+        normal = loop.normal.copy().freeze()
+        
+        if normal not in normals:
+            normals[normal] = len(normals)
+        
+        normals_lookup_dict[i] = normals[normal]
+    
+    return normals.keys(), normals_lookup_dict
+
+def export_lod(filePtr, obj, wm, idx, useFixedNormals):
+    # ArmaTools.optimize_export_lod(obj)
     # Header
     writeSignature(filePtr, 'P3DM')
     writeULong(filePtr, 0x1C)
@@ -472,8 +545,17 @@ def export_lod(filePtr, obj, wm, idx):
     wm.progress_update(idx*5)
     
     mesh = obj.data
-    #mesh.calc_loop_triangles()
-    
+    mesh.calc_normals_split()
+
+    normals, normals_lookup_dict = get_normals(mesh)
+
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.normal_update()
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+
     lod = lodKey(obj)
     if lod < 0:
         lod = -lod
@@ -483,10 +565,7 @@ def export_lod(filePtr, obj, wm, idx):
     #if lod == 1.000e+13 or lod == 4.000e+13:
     #    checkMass(obj, lod, mesh)
 
-    numberOfNormals = 0
-    for f in mesh.polygons:
-        numberOfNormals = numberOfNormals + len(f.vertices)    
-    
+    numberOfNormals = len(normals)
     print("Writing Vertices")    
     # Write number of vertices, normals, and faces
     writeULong(filePtr, len(mesh.vertices))         # Number of Vertices
@@ -495,23 +574,24 @@ def export_lod(filePtr, obj, wm, idx):
     writeULong(filePtr, 0)                          # Unused Flags
     
     # Write vertices/Points
-    writeVertices(filePtr, mesh)
+    vertex_flag = 0
+    if useFixedNormals:
+        vertex_flag = 33554432 # set vertices to fixed normals
+    writeVertices(filePtr, bm, vertex_flag)
     wm.progress_update(idx*5+1)
     
     print("Writing Normals")
     # Write normals
     # We can basically write whatever we like here since they are recalculated
     #normalOffsetInFile = filePtr.tell();
-    writeNormals(filePtr, mesh, numberOfNormals)
+    WriteNormalsFixed(filePtr, normals)
     wm.progress_update(idx*5+2)
             
     print("Writing faces")
     # Write faces
-    writeFaces(filePtr, obj, mesh)
+    writeFacesN(filePtr, obj, mesh, bm, normals_lookup_dict)
     wm.progress_update(idx*5+3)
 
-
-            
     # Done, now write Taggs
     writeSignature(filePtr, 'TAGG')
     print("taggs: Named selections")
@@ -519,7 +599,7 @@ def export_lod(filePtr, obj, wm, idx):
     writeNamedSelections(filePtr, obj, mesh)
     print("taggs: sharp edges")
     # Write sharp edges. This isn't the most efficient, but I don't really see a better possibility
-    writeSharpEdges(filePtr, mesh)
+    writeSharpEdgesN(filePtr, bm)
     wm.progress_update(idx*5+4)
     
     print("taggs: mass (if any)")
@@ -557,6 +637,8 @@ def export_lod(filePtr, obj, wm, idx):
         writeFloat(filePtr, FixupResolution(lod,obj.armaObjProps.lodDistance))
     else:
         writeFloat(filePtr, lod)
+
+    bm.free()
     
     
 def sameLod(objects, index):
@@ -638,13 +720,13 @@ def instantiateMeshCollector(master, applyModifiers = True):
     ArmaTools.deleteVertexGroupList(bpy.context, vgrpList)
 
 
-def exportLodLevelWithModifiers(myself, filePtr, obj, wm, idx, applyModifiers, renumberComponents, applyTransforms, originObject):
+def exportLodLevelWithModifiers(myself, filePtr, obj, wm, idx, applyModifiers, useFixedNormals, renumberComponents, applyTransforms, originObject):
     print("Exporting lod " , lodKey(obj), "of object", obj.name)
     coll = getTempCollection()
     print("------------------------------- Origin Object = ", originObject)
     if applyModifiers == False and originObject == None:
         # Simply export if we don't want to apply modifiers
-        export_lod(filePtr, obj, wm, idx)
+        export_lod(filePtr, obj, wm, idx, useFixedNormals)
     else:
         # If we have modifiers, copy the object and apply them
         bpy.ops.object.select_all(action='DESELECT')
@@ -682,7 +764,7 @@ def exportLodLevelWithModifiers(myself, filePtr, obj, wm, idx, applyModifiers, r
             possiblyRenumberComponents(tmpObj)
 
 
-        export_lod(filePtr, tmpObj, wm, idx)
+        export_lod(filePtr, tmpObj, wm, idx, useFixedNormals)
         bpy.ops.object.delete()
 
 def applyModifiersOnObject(tmpObj):
@@ -700,7 +782,7 @@ def possiblyRenumberComponents(obj):
         ArmaTools.RenumberComponents(obj)
 
 # Export a couple of meshes to a P3D MLOD files    
-def exportMDL(myself, filePtr, selectedOnly, applyModifiers, mergeSameLOD, renumberComponents, applyTransforms):
+def exportMDL(myself, filePtr, selectedOnly, applyModifiers, useFixedNormals, mergeSameLOD, renumberComponents, applyTransforms):
     if selectedOnly:
         objects = [obj
                     for obj in bpy.context.selected_objects
@@ -718,13 +800,13 @@ def exportMDL(myself, filePtr, selectedOnly, applyModifiers, mergeSameLOD, renum
     if len(objects) == 0:
         return False
     
-    exportObjectListAsMDL(myself, filePtr, applyModifiers,
+    exportObjectListAsMDL(myself, filePtr, applyModifiers, useFixedNormals,
                           mergeSameLOD, objects, renumberComponents, applyTransforms, None)
 
     return True
 
 
-def exportObjectListAsMDL(myself, filePtr, applyModifiers, mergeSameLOD, objects, renumberComponents, applyTransforms, originObject):
+def exportObjectListAsMDL(myself, filePtr, applyModifiers, useFixedNormals, mergeSameLOD, objects, renumberComponents, applyTransforms, originObject):
 
     print("exportObjectListAsMDL: originObject =", originObject)
 
@@ -753,7 +835,7 @@ def exportObjectListAsMDL(myself, filePtr, applyModifiers, mergeSameLOD, objects
         # For each object, export a LOD
         for idx, obj in enumerate(objects):
             exportLodLevelWithModifiers(
-                myself, filePtr, obj, wm, idx, applyModifiers, renumberComponents, applyTransforms, originObject)
+                myself, filePtr, obj, wm, idx, applyModifiers, useFixedNormals, renumberComponents, applyTransforms, originObject)
 
 
     else:
@@ -808,7 +890,7 @@ def exportObjectListAsMDL(myself, filePtr, applyModifiers, mergeSameLOD, objects
                     bpy.ops.object.transform_apply(
                         location=True, rotation=True, scale=True)
 
-                export_lod(filePtr, newTmpObj, wm, realIndex)
+                export_lod(filePtr, newTmpObj, wm, realIndex, useFixedNormals)
 
                 # Make sure we only have this one selected and delete it
                 bpy.ops.object.select_all(action='DESELECT')
@@ -817,7 +899,7 @@ def exportObjectListAsMDL(myself, filePtr, applyModifiers, mergeSameLOD, objects
                 bpy.ops.object.delete()
             else:
                 exportLodLevelWithModifiers(
-                    myself, filePtr, obj, wm, idx, applyModifiers, renumberComponents, applyTransforms, originObject)
+                    myself, filePtr, obj, wm, idx, applyModifiers, useFixedNormals, renumberComponents, applyTransforms, originObject)
                     
             idx = idx + 1
 
@@ -871,6 +953,7 @@ class ATBX_PT_p3d_export_options(bpy.types.Panel):
         layout.prop(operator, "mergeSameLOD")
         layout.prop(operator, "renumberComponents")
         layout.prop(operator, "applyTransforms")
+        layout.prop(operator, "useFixedNormals")
 
 class ATBX_OT_p3d_export(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     bl_idname = "armatoolbox.export_p3d"
@@ -900,6 +983,12 @@ class ATBX_OT_p3d_export(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
     renumberComponents: bpy.props.BoolProperty(
         name="Re-Number Components in Geometry LODS",
         description="If set, geometry lods will get their components renumbered to be contiguous",
+        default=True
+    )
+
+    useFixedNormals: bpy.props.BoolProperty(
+        name="Use fixed normal for mesh",
+        description="If set, mesh has fixed normals and they can't be recalculated in OB",
         default=True
     )
 
@@ -941,7 +1030,7 @@ class ATBX_OT_p3d_export(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
                 print("------" + o.name)
             filePtr = open(self.filepath, "wb")
             exportObjectListAsMDL(
-                self, filePtr, self.applyModifiers, self.mergeSameLOD, objects, self.renumberComponents, self.applyTransforms, None)
+                self, filePtr, self.applyModifiers, self.useFixedNormals, self.mergeSameLOD, objects, self.renumberComponents, self.applyTransforms, None)
             filePtr.close()
 
             ArmaTools.RunO2Script(context, self.filepath)
@@ -950,7 +1039,7 @@ class ATBX_OT_p3d_export(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
             # Open the file and export
             filePtr = open(self.filepath, "wb")
             exportMDL(self, filePtr, False,
-                    self.applyModifiers, self.mergeSameLOD, self.renumberComponents, self.applyTransforms)
+                    self.applyModifiers, self.useFixedNormals, self.mergeSameLOD, self.renumberComponents, self.applyTransforms)
             filePtr.close()
 
             ArmaTools.RunO2Script(context, self.filepath)
@@ -967,7 +1056,7 @@ class ATBX_OT_p3d_export(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
                 filePtr = open(fileName, "wb")
                 context.view_layer.objects.active = objs[0]
                 exportObjectListAsMDL(
-                    self, filePtr, self.applyModifiers, True, objs, self.renumberComponents, self.applyTransforms, config.originObject)
+                    self, filePtr, self.applyModifiers, self.useFixedNormals, True, objs, self.renumberComponents, self.applyTransforms, config.originObject)
                 filePtr.close()
                 ArmaTools.RunO2Script(context, fileName)
             except:
