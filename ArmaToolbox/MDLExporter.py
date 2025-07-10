@@ -141,37 +141,11 @@ def writeString(filePtr, value):
 def writeBytes(filePtr, value):
     filePtr.write(value)
 
-###
-## Export a single object as a LOD into the P3D file        
-#
-def OLDwriteNormals(filePtr, mesh, numberOfNormals):
-    for v in range(0,numberOfNormals):
-        writeFloat(filePtr, 0)
-        writeFloat(filePtr, 1)
-        writeFloat(filePtr, 0)
-    
-    #return v
-
 def WriteNormalsFixed(filePtr, normals):
     for normal in normals:
         writeFloat(filePtr, -normal[0])
         writeFloat(filePtr, -normal[2])
         writeFloat(filePtr, -normal[1])
-
-# FaceNormals must be inverted (-X, -Y, -Z) for clockwise vertex order (default for DirectX), and not changed for counterclockwise order.
-def writeNormals(filePtr, mesh, numberOfNormals):
-    print("faces = ", len(mesh.polygons))
-    if (4,1,0) > bpy.app.version:
-        mesh.calc_normals_split()
-    for poly in mesh.polygons:
-        #print("index = ", poly.index)
-        loops = poly.loop_indices
-        for l in loops:
-            normal = mesh.loops[l].normal
-            writeFloat(filePtr, -normal[0])
-            writeFloat(filePtr, -normal[1])
-            writeFloat(filePtr, -normal[2])
-            #print("normal = " , normal)
 
 def writeVertices(filePtr, mesh, flag = 0):
     for v in mesh.verts:
@@ -179,7 +153,6 @@ def writeVertices(filePtr, mesh, flag = 0):
         writeFloat(filePtr, v.co.z)
         writeFloat(filePtr, v.co.y)
         writeULong(filePtr, flag)
-
 
 def write_face_pseudo_vertextable(filePtr, loop, uv_layer, normals_lookup_dict):
     writeULong(filePtr, loop.vert.index)
@@ -212,52 +185,6 @@ def writeFacesN(filePtr, obj, mesh, bm, normals_lookup_dict):
         writeULong(filePtr, 0)
         writeString(filePtr, textureName)
         writeString(filePtr, materialName)
-
-
-def writeFaces(filePtr, obj, mesh, bm):
-    bm = bmesh.new()
-    bm.from_mesh(obj.data)
-    bm.faces.ensure_lookup_table()
-    fflayer = ArmaTools.getBMeshFaceFlags(bm)
-
-    for idx,face in enumerate(mesh.polygons):
-        faceFlags = bm.faces[idx][fflayer]
-
-        if len(face.vertices) > 4:
-            raise RuntimeError("Model " + obj.name + " contains n-gons and cannot be exported")
-        materialName, textureName = getMaterialInfo(face, obj)
-        writeULong(filePtr, len(face.vertices))
-
-        # UV'S
-        uvs = []
-        for i1, loopindex in enumerate(face.loop_indices):
-            meshloop = mesh.loops[i1]
-            
-            try:
-                uv = mesh.uv_layers[0].data[loopindex].uv
-            except IndexError:
-                uv = [0,0]
-            uvs.append([uv[0], uv[1]])
-
-        for v in range(len(face.vertices)):
-            writeULong(filePtr, face.vertices[v]) # vert id
-            writeULong(filePtr, face.vertices[v]) # normal id
-            uv = uvs[v]
-            #print("u = ", uv[0], "v = ",uv[1])
-            uv[1] = 1 - uv[1]
-            writeFloat(filePtr, uv[0])
-            writeFloat(filePtr, uv[1])
-        
-        if len(face.vertices) == 3:
-            writeULong(filePtr, 0)
-            writeULong(filePtr, 0)
-            writeFloat(filePtr, 0.0)
-            writeFloat(filePtr, 0.0)
-        writeULong(filePtr, faceFlags)
-        writeString(filePtr, textureName)
-        writeString(filePtr, materialName)
-    
-    bm.free()
 
 def proxyPathStrip(pathName):
     if len(pathName) > 3:
